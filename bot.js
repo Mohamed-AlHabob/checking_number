@@ -1,67 +1,89 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const XLSX = require('xlsx');
-const qrcode = require('qrcode-terminal');
+const qrcode = require('qrcode-terminal'); // For displaying QR code in the terminal
+const XLSX = require('xlsx'); // For creating Excel files
 
+// Create a new client with LocalAuth for session persistence
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth(), // Saves session data locally to avoid scanning QR code every time
     puppeteer: {
-        headless: true,
+        headless: true, // Run in headless mode (no browser UI)
     },
 });
 
-const targetNumber = "967776200929@c.us";
-const groupsWithNumber = [];
+// Event: Generate QR code for authentication
+client.on('qr', (qr) => {
+    console.log('Scan the QR code below to log in:');
+    qrcode.generate(qr, { small: true }); // Display QR code in the terminal
+});
 
+// Event: Client is authenticated
+client.on('authenticated', () => {
+    console.log('Client is authenticated!');
+});
+
+// Event: Client is ready to use
 client.on('ready', async () => {
     console.log('Client is ready!');
 
+    // Set the contactId to the specified value
+    const contactId = '967776200929@c.us'; // Replace with the desired contact ID
+
     try {
-        const chats = await client.getChats();
-        const groups = chats.filter(chat => chat.isGroup);
+        // Get common groups with the contact
+        const commonGroups = await client.getCommonGroups(contactId);
 
-        for (const group of groups) {
-            console.log(`Checking group: ${group.name}`);
+        // Log the shared groups
+        if (commonGroups.length > 0) {
+            console.log(`Shared groups with ${contactId}:`);
 
-            try {
-                const participants = await group.fetchParticipants();
-
-                const isNumberInGroup = participants.some(participant => {
-                    const participantNumber = participant.id.user; // Get the number in the format "number@c.us"
-                    return participantNumber === targetNumber;
-                });
-
-                if (isNumberInGroup) {
-                    console.log(`Number found in group: ${group.name}`);
-                    groupsWithNumber.push(group.name);
+            // Fetch full group details (including names) for each group
+            const groupData = [];
+            for (const group of commonGroups) {
+                if (group && group._serialized) {
+                    try {
+                        // Fetch the full group details using the group ID
+                        const fullGroup = await client.getChatById(group._serialized);
+                        groupData.push({
+                            GroupId: group._serialized,
+                            GroupName: fullGroup.name || 'Unnamed Group', // Fallback for unnamed groups
+                        });
+                    } catch (error) {
+                        console.error(`Error fetching details for group ${group._serialized}:`, error);
+                    }
+                } else {
+                    console.warn('Invalid group object:', group);
                 }
-            } catch (error) {
-                console.error(`Error fetching participants for group ${group.name}:`, error.message);
             }
-        }
 
-        if (groupsWithNumber.length > 0) {
+            // Create a new workbook and worksheet
             const workbook = XLSX.utils.book_new();
-            const worksheet = XLSX.utils.aoa_to_sheet([["Group Name"], ...groupsWithNumber.map(name => [name])]);
-            XLSX.utils.book_append_sheet(workbook, worksheet, "Groups");
-            XLSX.writeFile(workbook, 'groups_with_number.xlsx');
-            console.log('Excel file saved: groups_with_number.xlsx');
+            const worksheet = XLSX.utils.json_to_sheet(groupData);
+
+            // Add the worksheet to the workbook
+            XLSX.utils.book_append_sheet(workbook, worksheet, 'Shared Groups');
+
+            // Save the workbook to a file
+            const fileName = 'shared_groups.xlsx';
+            XLSX.writeFile(workbook, fileName);
+
+            console.log(`Group names and IDs saved to ${fileName}`);
         } else {
-            console.log('Number not found in any group.');
+            console.log(`No shared groups with ${contactId}.`);
         }
     } catch (error) {
-        console.error('Error:', error);
-    } finally {
-        await client.destroy();
+        console.error('Error fetching shared groups:', error);
     }
 });
 
-client.on('qr', (qr) => {
-    console.log('Scan the QR code to log in:');
-    qrcode.generate(qr, { small: true });
-});
-
+// Event: Handle authentication failure
 client.on('auth_failure', (msg) => {
     console.error('Authentication failed:', msg);
 });
 
+// Event: Handle disconnection
+client.on('disconnected', (reason) => {
+    console.log('Client was logged out:', reason);
+});
+
+// Initialize the client
 client.initialize();
